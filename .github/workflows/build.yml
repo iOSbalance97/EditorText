@@ -1,5 +1,4 @@
 name: Compilar IPA (sin firmar)
-
 on:
   push:
     branches: [main, master]
@@ -8,41 +7,36 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: "Runner de macOS (xcode-27 = SDK de iOS 27, macos-26 = SDK de iOS 26)"
+        description: "Runner de macOS"
         type: choice
         default: xcode-27
         options:
           - xcode-27
           - macos-26
-
+  release:
+    types: [published]
 permissions:
   contents: write
-
 jobs:
   build:
     name: Compilar Textura.ipa
     runs-on: ${{ inputs.runner || vars.RUNNER || 'xcode-27' }}
     timeout-minutes: 30
-
     steps:
       - name: Descargar el código
         uses: actions/checkout@v4
-
       - name: Versión de Xcode y SDK
         run: |
           xcode-select -p
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
-
       - name: Instalar XcodeGen
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install xcodegen
-
       - name: Generar el proyecto de Xcode
         run: xcodegen generate
-
       - name: Compilar (sin firmar)
         run: |
           set -o pipefail
@@ -58,30 +52,33 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee build.log
-
       - name: Crear el IPA
         run: |
           APP_PATH=$(find build/Build/Products -maxdepth 3 -name "Textura.app" -type d | head -n 1)
           if [ -z "$APP_PATH" ]; then
-            echo "No se encontró Textura.app"
+            echo "ERROR: No se encontró Textura.app"
             exit 1
           fi
           rm -rf Payload Textura.ipa
           mkdir Payload
           cp -R "$APP_PATH" Payload/
           rm -rf Payload/Textura.app/_CodeSignature
-          echo "Bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/Textura.app/Info.plist)"
+          echo "Bundle ID:"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/Textura.app/Info.plist
           zip -qry Textura.ipa Payload
+          echo "Comprobando IPA..."
           ls -lh Textura.ipa
-          unzip -l Textura.ipa | head -n 15
-
+          unzip -t Textura.ipa
+          if [ ! -s Textura.ipa ]; then
+            echo "ERROR: El IPA está vacío o no existe"
+            exit 1
+          fi
       - name: Subir el IPA como artefacto
         uses: actions/upload-artifact@v4
         with:
           name: Textura-IPA-sin-firmar
           path: Textura.ipa
           if-no-files-found: error
-
       - name: Subir el registro de compilación si falla
         if: failure()
         uses: actions/upload-artifact@v4
@@ -89,9 +86,16 @@ jobs:
           name: build-log
           path: build.log
           if-no-files-found: ignore
-
-      - name: Publicar en Releases (solo al crear una etiqueta v*)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: Textura.ipa
+      - name: Publicar IPA en Releases
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f Textura.ipa ]; then
+            echo "ERROR: No existe Textura.ipa"
+            exit 1
+          fi
+          TAG="${GITHUB_REF_NAME}"
+          echo "Publicando IPA en Release: $TAG"
+          gh release upload "$TAG" Textura.ipa --clobber
+          echo "IPA publicado correctamente"
