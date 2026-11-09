@@ -13,6 +13,10 @@ on:
         options:
           - xcode-27
           - macos-26
+      release_tag:
+        description: "Etiqueta de la Release (ejemplo: v1.0.0)"
+        type: string
+        required: false
   release:
     types: [published]
 permissions:
@@ -66,13 +70,13 @@ jobs:
           echo "Bundle ID:"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/Textura.app/Info.plist
           zip -qry Textura.ipa Payload
-          echo "Comprobando IPA..."
-          ls -lh Textura.ipa
-          unzip -t Textura.ipa
           if [ ! -s Textura.ipa ]; then
-            echo "ERROR: El IPA está vacío o no existe"
+            echo "ERROR: El IPA no existe o está vacío"
             exit 1
           fi
+          echo "IPA generado:"
+          ls -lh Textura.ipa
+          unzip -t Textura.ipa
       - name: Subir el IPA como artefacto
         uses: actions/upload-artifact@v4
         with:
@@ -87,15 +91,25 @@ jobs:
           path: build.log
           if-no-files-found: ignore
       - name: Publicar IPA en Releases
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ ! -f Textura.ipa ]; then
-            echo "ERROR: No existe Textura.ipa"
+          set -e
+          if [ ! -s Textura.ipa ]; then
+            echo "ERROR: No se encuentra Textura.ipa"
             exit 1
           fi
-          TAG="${GITHUB_REF_NAME}"
-          echo "Publicando IPA en Release: $TAG"
+          TAG="${RELEASE_TAG:-${EVENT_TAG:-$GITHUB_REF_NAME}}"
+          echo "Release de destino: $TAG"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "La Release no existe. Creándola..."
+            gh release create "$TAG" \
+              --title "Textura $TAG" \
+              --generate-notes
+          fi
           gh release upload "$TAG" Textura.ipa --clobber
           echo "IPA publicado correctamente"
+          gh release view "$TAG"
